@@ -1,0 +1,15 @@
+.venv/
+.git/
+.gitignore
+**/__pycache__/
+.pytest_cache/
+.hf_cache/
+*.sqlite3
+*.log
+.env
+tests/
+docs/
+CLAUDE.md
+render.yaml
+Dockerfile
+.dockerignore

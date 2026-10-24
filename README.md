@@ -76,3 +76,14 @@ Image-dependent tests skip when sample images are missing.
 5. Give the backend team the base URL. On Render, send images as `http(s)` URLs or base64 (local paths only work for files inside this repo, e.g. `sample_data/images/...`).
 
 Notes: one worker only (each worker loads its own copy of the models). The SQLite embedding cache lives on Render's ephemeral disk and resets on each deploy — that's fine, it's only a speed cache.
+
+## Docker (AWS EC2 / ECS / any host)
+```bash
+docker build -t ps23-ml-service .
+docker run -d --name ml --restart unless-stopped -p 8001:8001 -v ml_data:/app/data ps23-ml-service
+curl localhost:8001/health      # {"status":"ok","models_loaded":true} after ~30-60 s
+```
+- Models are baked into the image (no downloads at startup; runs offline). Image ≈ 2–2.5 GB.
+- Host needs **≥ 2 GB RAM** (t3.small or bigger). On a 1 GB instance add 2 GB swap first or it may be OOM-killed while loading models.
+- Change port: `-e PORT=8080 -p 8080:8080`. `-v ml_data:/app/data` keeps the embedding cache across restarts (optional).
+- Built-in `HEALTHCHECK` hits `/health`; for ALB/ECS target groups use path `/health` too.
