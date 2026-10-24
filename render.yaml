@@ -1,0 +1,24 @@
+# Render Blueprint — PS-23 ML service
+# Needs >= 2 GB RAM (measured ~620 MB steady, ~1 GB peak while loading CLIP + MiniLM).
+# Free / Starter (512 MB) plans will run out of memory.
+services:
+  - type: web
+    name: ps23-ml-service
+    runtime: python
+    plan: standard
+    buildCommand: pip install -r requirements.txt && python scripts/download_models.py
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.14.6
+      - key: HF_HOME          # keep model cache inside the project dir so build-time downloads survive to runtime
+        value: /opt/render/project/src/.hf_cache
+      - key: ML_LOAD_MODELS
+        value: "1"
+      - key: ML_DEVICE
+        value: cpu
+      - key: ML_CACHE_DB
+        value: embedding_cache.sqlite3
+      - key: ML_HTTP_TIMEOUT
+        value: "5"

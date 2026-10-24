@@ -1,0 +1,44 @@
+# Decisions
+- Repo root = `ml-service/` — CLAUDE.md already lived at root; no extra nesting.
+- CLIP via `transformers` (`openai/clip-vit-base-patch32`) — sentence-transformers already pulls transformers; one less dependency than open_clip.
+- CPU-only torch from the PyTorch CPU index — smaller install, meets "CPU fine".
+- `ML_LOAD_MODELS=0` env flag — lets backend run the service without downloading models; `/health` then reports `models_loaded: false`.
+- Model load failure does not crash the server — error is logged, `models_loaded: false`.
+- Embedding cache key = (complaint_id, kind) with kind ∈ {text, image}, float32 BLOB in SQLite.
+- Image input: `image_base64` wins over `image_url` if both given; relative paths resolve from repo root; data-URI prefix allowed; 5 s download timeout, 10 MB max.
+- Verify request also accepts optional `before_image_base64` / `after_image_base64` (additive, per Rule 8).
+- Duplicate `ComplaintItem` also accepts optional `image_base64` (additive).
+- All thresholds: see `app/config.py` (initial values = CLAUDE.md Section 6; tuning in Phase 6).
+- Classify image: CLIP prompt ensemble — mean of the L2-normalized prompt embeddings per category, softmax over cosine × CLIP logit_scale (~100). Precomputed once at startup (`classify.init()` in lifespan).
+- Classify text: raw = 0.6·keyword (hits / max hits) + 0.4·MiniLM cos-sim (clipped ≥0), softmax with temperature 0.1. Keyword hit → ~0.99 confidence; no keyword → usually Low → needs_review.
+- Keywords match whole words + optional suffix (`KEYWORD_SUFFIXES`: kachre, potholes, leaking…). Replaced `jal` with `jal board` (bare `jal` matched "jaldi").
+- Bad/unreadable image with text → text-only result but `needs_review: true` (missing evidence photo should be seen by a human).
+- Models not loaded → text falls back to keyword-only; image ignored with reason.
+- Duplicate score = weighted mean of available modalities (text 0.5 / image 0.5, renormalized if one missing) + distance bonus up to 0.05 (linear, 0 m → 0.05, 100 m → 0), clipped to [0,1].
+- Duplicate: text_sim only when both sides have text, image_sim only when both have a readable image. Neither → not duplicate, needs_review.
+- Duplicate: missing GPS/time/category doesn't exclude a candidate (can't prove it's different) but sets needs_review.
+- Duplicate: borderline (0.6–0.75) returns matched_complaint_id for the reviewer but group_id null.
+- Measured MiniLM sims: English paraphrase 0.88, unrelated same-category 0.42, Hinglish paraphrase 0.65, Hinglish↔English 0.11 (model is English-only; stack fixed, so accepted).
+- CLIP image embeddings batched in one forward pass; CLIP warmed up at startup. 11 uncached images: 2.7 s → 1.3 s.
+- Tests use an isolated temp SQLite cache (set in conftest) and unique complaint IDs.
+- Verify: missing GPS/timestamps → Suspicious, not Rejected (absence ≠ proof of fraud). Rejected only on positive evidence: GPS > 50 m, after ≤ complaint time, pHash ≤ 5.
+- Verify: Verified also requires location_ok and time_ok (spec order: rejections first, then same place AND issue removed).
+- Verify issue prob = 2-way softmax (present vs fixed prompt-ensemble embedding) × CLIP logit_scale; unknown category → "other" prompts + reason.
+- Verify score = sum of VERIFY_WEIGHTS over boolean checks (explainable; same_place uses ≥ 0.70).
+- Verify needs_review only for Suspicious; Rejected is a definite outcome.
+- pHash threshold 5 kept: textured JPEG recompress/resize copies measured 0–2. Flat synthetic images give 6 (pHash unstable on flat content) — tests use textured images.
+- Priority urgent boost: 0.4 for first keyword, +0.05 per extra distinct keyword, cap 0.5 → one urgent word alone lifts any category ≥ 0.6, streetlight/water/road to High.
+- Priority urgent keywords use English-only suffixes (s/es/ed/ing): shared classify suffixes made "aag" (fire) match "aage" (ahead). "electrocut" → explicit "electrocuted"/"electrocution".
+- Priority: missing text / unknown category → scored anyway, needs_review true.
+- Hotspots: point lat/lng made Optional (was required → 422 on missing GPS, violating Rule 4); invalid points skipped, not counted as noise.
+- Hotspots: clusters sorted by size and renumbered (0 = largest); center = arithmetic mean (fine at city scale); bad eps_m/min_samples → config defaults.
+- Sample images = 10 real Wikimedia Commons photos (CC, attribution in sample_data/images/LICENSES.md); no synthetic/edited images, so no fake "after" photo for Verified.
+- Tuning (scripts/tune.py on sample_data, 2026-10-24):
+  - CLIP cosine: same spot 0.86 (garbage, 2 angles) / 0.98 (pothole re-shot); different places 0.46–0.72.
+  - SAME_PLACE_MIN 0.70 → **0.75** (different places reached 0.716; margin below 0.86 because the scene changes after a fix).
+  - DUP_THRESHOLD 0.75 → **0.80** (different place 0.72 + 0.05 distance bonus = 0.77 would have been a false duplicate). Text paraphrase pair still 0.92.
+  - pHash: re-shot same spot = 8, different photos 22–38 → PHASH_SAME_PHOTO_MAX 5 kept.
+  - Verify road prompts replaced: old "freshly paved asphalt" fixed-prompts gave a clean highway issue=0.79 (would never verify a fixed road); new set: potholes 1.00, clean road 0.03.
+  - Verify streetlight prompts now describe physical damage (smashed/bent/hanging wires) — daytime photos can't show "lit"; clean road 0.69 → 0.04.
+  - Waste/water verify prompts kept: dirty 0.56–0.98, clean road 0.00–0.22. ISSUE_AFTER_MAX 0.4 / ISSUE_DROP_MIN 0.3 kept.
+  - Classify prompts kept: 9/10 photos correct (waste 0.64–0.97, road 0.82–1.00, water 0.95–0.99); streetlight1 is a weak photo (→ other 0.46), extra lamp-post prompts didn't help.
